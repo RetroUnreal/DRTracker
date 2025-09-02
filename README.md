@@ -14,7 +14,9 @@ Commands:\
 
 /drt lock — Lock the frames.
 
-/drt scale target|focus <0.5–3.0> — Set scale of the target/focus DR frames. Default: 1.0.
+/drt scale target <0.5–3.0> — Set scale of the target DR frame. Default: 1.0.
+
+/drt scale focus <0.5–3.0> — Set scale of the focus DR frame. Default: 1.0.
 
 /drt icons — On shows your DR Category icons always with a green border when not Diminished, Off only shows the icons when there is a DR
 
