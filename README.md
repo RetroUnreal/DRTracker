@@ -10,7 +10,8 @@ With "/drt icons" turned ON (default) it will show all your classes DR Categorie
 
 With  "/drt icons" turned OFF it will only start showing the DR's in Yellow as soon as they happpen.
 
-The DR will show up on cast, but will refresh after it falls off, since this is how DR's should work. As far as I know the DR starts counting for 18 seconds after the debuff falls off. (in TBC at least...) I'll update it soon so it only starts showing the DR timer after the debuff falls off. But still shows the icons & yellow/red borders before the DR timer starts counting ofcourse.\
+The DR will show up on cast, but will refresh after it falls off, since this is how DR's should work. As far as I know the DR starts counting for 18 seconds after the debuff falls off. (in TBC at least...) I'll update it soon so it only starts showing the DR timer after the debuff falls off. But still shows the icons & yellow/red borders before the DR timer starts counting ofcourse.
+
 If I'm wrong about DR's on Project-Epoch, LMK.
 
 # Commands:
