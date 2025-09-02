@@ -11,7 +11,7 @@ With  "/drt icons" turned OFF it will only start showing the DR's in Yellow as s
 
 The DR will show up on cast, but will refresh after it falls off, since this is how DR's should work. As far as I know the DR starts counting for 18 seconds after the debuff falls off. (in TBC at least...) Might be able to add a command that only starts showing the DR after the debuff falls off if you would prefer that. Or if I'm wrong about DR's LMK.
 
-Commands:\
+# Commands:\
 /drt — Shows all commands and their intended usage, and your classes DR Categories below them.
 
 /drt unlock — Unlock and show the target/focus DR frames to move them.
