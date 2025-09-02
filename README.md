@@ -5,8 +5,7 @@ Early version, let me know any bugs. Only tested with Mage and having one of my 
 
 Needs to be your current target/focus to work. Doesn't track anything else. Blame the shitty CLEU on epoch...
 
-The DR will show up on cast, but will refresh after it falls off, since this is how DR's should work. A
-s far as I know the DR starts counting after the debuff falls off. (in TBC at least...) Might be able to add a command that only starts showing the DR after the debuff falls off if you would prefer that. Or if I'm wrong about DR's LMK.
+The DR will show up on cast, but will refresh after it falls off, since this is how DR's should work. As far as I know the DR starts counting after the debuff falls off. (in TBC at least...) Might be able to add a command that only starts showing the DR after the debuff falls off if you would prefer that. Or if I'm wrong about DR's LMK.
 
 Commands:\
 /drt unlock — Unlock and show the target/focus DR frames to move them.
