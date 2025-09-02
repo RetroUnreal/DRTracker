@@ -5,6 +5,10 @@ Early version, let me know any bugs. Only tested with Mage and having one of my 
 
 Needs to be your current target/focus to work. Doesn't track anything else. Blame the shitty CLEU on epoch...
 
+With "/drt icons" turned ON (default) it will show all your classes DR Categories in the Target/Focus DR Frames with a green border if there is no DR, a yellow border for the first DR and a red border for the third DR and on
+
+With  "/drt icons" turned OFF it will only start showing the DR's in Yellow as soon as they happpen.
+
 The DR will show up on cast, but will refresh after it falls off, since this is how DR's should work. As far as I know the DR starts counting for 18 seconds after the debuff falls off. (in TBC at least...) Might be able to add a command that only starts showing the DR after the debuff falls off if you would prefer that. Or if I'm wrong about DR's LMK.
 
 Commands:\
