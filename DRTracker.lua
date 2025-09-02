@@ -1,0 +1,640 @@
+-- ================================
+-- DRTracker - Project-Epoch (3.3.5a)
+-- ================================
+local ADDON_NAME, DRTracker = ...
+local _, playerClass = UnitClass("player")
+
+local metaDB  = DRTracker.metaDB      -- icons per class/category (from DRData.lua)
+local spellDB = DRTracker.spellDB     -- DR categories -> spellIDs (from DRData.lua)
+local nameDB  = DRTracker.nameDB or {}-- optional name->category filled in DRData.lua
+
+-- WoW API locals (3.3.5-safe)
+local ipairs, pairs = ipairs, pairs
+local tinsert, tsort = table.insert, table.sort
+local min, max = math.min, math.max
+
+local GetTime, UnitGUID, UnitName = GetTime, UnitGUID, UnitName
+local UnitPlayerControlled, UnitIsUnit, UnitExists = UnitPlayerControlled, UnitIsUnit, UnitExists
+local UnitIsPlayer, UnitAura, GetSpellInfo = UnitIsPlayer, UnitAura, GetSpellInfo
+local InCombatLockdown = InCombatLockdown
+
+-- -------------------------
+-- Config & SavedVariables
+-- -------------------------
+local FRAME_SIZE = 25
+local DR_TIME    = 18     -- seconds for DR to expire
+local MIN_SCALE, MAX_SCALE = 0.5, 3.0
+local BORDER_EXTRA = 18   -- outside glow thickness
+
+DRT_Saved = DRT_Saved or {}
+local function asnum(v, default) v = (type(v)=="number") and v or tonumber(v); if not v or v<=0 then return default end; return v end
+
+DRT_Saved.scaleTarget = asnum(DRT_Saved.scaleTarget, 1.0)
+DRT_Saved.scaleFocus  = asnum(DRT_Saved.scaleFocus,  1.0)
+DRT_Saved.scaleAll    = asnum(DRT_Saved.scaleAll,    1.0)
+DRT_Saved.allMax      = math.floor(asnum(DRT_Saved.allMax, 8))
+DRT_Saved.allMode     = DRT_Saved.allMode or "relevant"  -- kept internally; UI disabled
+-- default: icons always visible (green until DR is active)
+if type(DRT_Saved.iconsAlwaysOn) ~= "boolean" then
+  DRT_Saved.iconsAlwaysOn = true
+end
+
+if type(DRT_Saved.allEnabled) ~= "boolean" then DRT_Saved.allEnabled = false end -- HIDDEN BY DEFAULT
+
+-- Debug toggle: when ON, we also track NPCs (for testing on mobs)
+local DRT_DEBUG = false
+
+-- -------------------------
+-- State
+-- -------------------------
+-- DRDB[guid][category] = { lastStart, count, hadAura, lastExpire, byPlayer }
+local DRDB, DRNames, DRKind = {}, {}, {}  -- DRKind[guid] = "player"|"pet"|"npc"
+
+local SpellToCat   = {}   -- spellID -> category  (built from DRData.lua)
+local Interested   = {}   -- categories your class cares about (from metaDB[playerClass])
+local DRFrames     = {}   -- per-unit icon frames
+local DRAnchors    = {}   -- anchors for target/focus
+
+-- (ALL window structs are kept but UI is disabled)
+local AllAnchor
+local AllRows      = {}
+
+local COLS, PAD = 3, 2
+
+local function clamp(v, a, b) return min(max(v, a), b) end
+local function defaultPointFor(unit)
+  if unit == "target" then return "CENTER", UIParent, "CENTER", 260, -160
+  elseif unit == "focus" then return "CENTER", UIParent, "CENTER", 260, -210
+  elseif unit == "all"   then return "CENTER", UIParent, "CENTER",   0, -260 end
+  return "CENTER", UIParent, "CENTER", 0, 0
+end
+
+-- Build LUTs
+local function BuildSpellLUT()
+  wipe(SpellToCat)
+  for cat, list in pairs(spellDB or {}) do
+    for i = 1, #list do SpellToCat[list[i]] = cat end
+  end
+end
+local function BuildInterested()
+  wipe(Interested)
+  for cat in pairs(metaDB[playerClass] or {}) do Interested[cat] = true end
+end
+
+-- 3.3.5 GUID classifier (hex form)
+local function classifyGUID_hex(guid)
+  if not guid then return "npc" end
+  -- Player: 0x00..., Creature: 0xF13..., Pet/Guardian/Vehicle: 0xF14/0xF15...
+  if guid:sub(1,2) == "0x" then
+    local b3b4 = guid:sub(3,4)  -- two hex chars after 0x
+    if b3b4 == "00" then return "player" end
+    if guid:find("^0xF14") or guid:find("^0xF15") then return "pet" end
+    return "npc"
+  end
+  return "npc"
+end
+
+-- -------------------------
+-- Icon + border helpers (border sits ABOVE the cooldown sweep)
+-- -------------------------
+local function createIcon(parent, category, icon)
+  local f = CreateFrame("Frame", nil, parent)
+  f:SetSize(FRAME_SIZE, FRAME_SIZE)
+
+  f.t = f:CreateTexture(nil, "ARTWORK")
+  f.t:SetAllPoints()
+  f.t:SetTexture("Interface\\Icons\\" .. (icon or "INV_Misc_QuestionMark"))
+
+  f.cd = CreateFrame("Cooldown", nil, f, "CooldownFrameTemplate")
+  f.cd:SetAllPoints(f.t)
+  f.cd:SetFrameLevel(f:GetFrameLevel() + 1)
+
+  local overlay = CreateFrame("Frame", nil, f)
+  overlay:SetAllPoints()
+  overlay:SetFrameLevel(f.cd:GetFrameLevel() + 5)
+
+  f.border = overlay:CreateTexture(nil, "OVERLAY")
+  f.border:SetTexture("Interface\\Buttons\\UI-ActionButton-Border")
+  f.border:SetBlendMode("ADD")
+  f.border:SetPoint("CENTER", f, "CENTER", 0, 0)
+  f.border:SetWidth(FRAME_SIZE + BORDER_EXTRA)
+  f.border:SetHeight(FRAME_SIZE + BORDER_EXTRA)
+  f.border:Hide()
+
+  f:Hide()
+  return f
+end
+local function BorderGreen(f)  f.border:Show(); f.border:SetVertexColor(0, 1, 0, 1) end
+local function BorderYellow(f) f.border:Show(); f.border:SetVertexColor(1, 1, 0, 1) end
+local function BorderRed(f)    f.border:Show(); f.border:SetVertexColor(1, 0, 0, 1) end
+local function BumpBorderByCount(frame, count)
+  if count >= 2 then BorderRed(frame)
+  elseif count >= 1 then BorderYellow(frame)
+  else BorderGreen(frame) end
+end
+
+-- -------------------------
+-- Anchors (target/focus)
+-- -------------------------
+local function CreateAnchor(unit)
+  if DRAnchors[unit] then return DRAnchors[unit] end
+  local anchor = CreateFrame("Frame", "DRT_Anchor_"..unit, UIParent)
+  anchor:SetSize(COLS*FRAME_SIZE + (COLS+1)*PAD, 2*FRAME_SIZE + 3*PAD)
+  anchor:SetMovable(true)
+  anchor:EnableMouse(false)
+  anchor:RegisterForDrag("LeftButton")
+  anchor:SetScript("OnDragStart", function(s) if s._unlocked then s:StartMoving() end end)
+  anchor:SetScript("OnDragStop", function(s)
+    s:StopMovingOrSizing()
+    local p, _, rp, x, y = s:GetPoint()
+    DRT_Saved[unit] = {point=p, relPoint=rp, x=x, y=y}
+  end)
+
+  anchor.bg = anchor:CreateTexture(nil, "BACKGROUND"); anchor.bg:SetAllPoints(); anchor.bg:SetTexture(0,0,0,0.35); anchor.bg:Hide()
+  anchor.label = anchor:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  anchor.label:SetPoint("TOPLEFT", 4, -4); anchor.label:SetText("DRTracker: "..unit.." (drag)"); anchor.label:Hide()
+
+  anchor:ClearAllPoints()
+  local pos = DRT_Saved[unit]; local p, rel, rp, x, y = defaultPointFor(unit)
+  anchor:SetPoint(pos and (pos.point or p) or p, UIParent, pos and (pos.relPoint or rp) or rp, pos and (pos.x or x) or x, pos and (pos.y or y) or y)
+
+  DRFrames[unit] = DRFrames[unit] or {}
+  for category, icon in pairs(metaDB[playerClass] or {}) do
+    if not DRFrames[unit][category] then
+      local count = 0; for _ in pairs(DRFrames[unit]) do count = count + 1 end
+      local col = count % COLS
+      local row = math.floor(count / COLS)
+      local f = createIcon(anchor, category, icon)
+      f:SetPoint("TOPLEFT", PAD + col*(FRAME_SIZE+PAD), -PAD - row*(FRAME_SIZE+PAD))
+      DRFrames[unit][category] = f
+    end
+  end
+
+  anchor:SetScale(asnum(unit=="target" and DRT_Saved.scaleTarget or DRT_Saved.scaleFocus, 1.0))
+  DRAnchors[unit] = anchor
+  return anchor
+end
+local function EnsureAnchor(unit) return DRAnchors[unit] or CreateAnchor(unit) end
+local function EnsureUnitCategoryFrame(unit, category)
+  EnsureAnchor(unit)
+  DRFrames[unit] = DRFrames[unit] or {}
+  if not DRFrames[unit][category] then
+    local count = 0; for _ in pairs(DRFrames[unit]) do count = count + 1 end
+    local col = count % COLS
+    local row = math.floor(count / COLS)
+    local icon = metaDB[playerClass] and metaDB[playerClass][category] or nil
+    local f = createIcon(DRAnchors[unit], category, icon)
+    f:SetPoint("TOPLEFT", PAD + col*(FRAME_SIZE+PAD), -PAD - row*(FRAME_SIZE+PAD))
+    DRFrames[unit][category] = f
+  end
+  return DRFrames[unit][category]
+end
+
+-- -------------------------
+-- (ALL window code retained but UI disabled)
+-- -------------------------
+local function ClearAllRows() for _, r in ipairs(AllRows) do r:Hide() end end
+
+local function CreateAllAnchor()
+  if AllAnchor then return AllAnchor end
+  local a = CreateFrame("Frame", "DRT_All", UIParent)
+  a:SetMovable(true); a:EnableMouse(false)
+  a:RegisterForDrag("LeftButton")
+  a:SetScript("OnDragStart", function(s) if s._unlocked then s:StartMoving() end end)
+  a:SetScript("OnDragStop", function(s)
+    s:StopMovingOrSizing()
+    local p, _, rp, x, y = s:GetPoint()
+    DRT_Saved.allPos = {point=p, relPoint=rp, x=x, y=y}
+  end)
+
+  a:ClearAllPoints()
+  local pos = DRT_Saved.allPos; local p, rel, rp, x, y = defaultPointFor("all")
+  a:SetPoint(pos and (pos.point or p) or p, UIParent, pos and (pos.relPoint or rp) or rp, pos and (pos.x or x) or x, pos and (pos.y or y) or y)
+
+  a.bg = a:CreateTexture(nil, "BACKGROUND"); a.bg:SetAllPoints(); a.bg:SetTexture(0,0,0,0.35); a.bg:Hide()
+  a.label = a:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  a.label:SetPoint("TOPLEFT", 4, -4); a.label:SetText("DRTracker: ALL (drag)"); a.label:Hide()
+
+  local maxRows = clamp(asnum(DRT_Saved.allMax, 8), 1, 40)
+  local rowH = FRAME_SIZE + 16 + PAD
+  a:SetSize(FRAME_SIZE + PAD*2 + 120, maxRows*rowH + PAD*2)
+
+  AllRows = {}
+  for i=1, maxRows do
+    local row = CreateFrame("Frame", nil, a)
+    row:SetSize(a:GetWidth()-PAD*2, rowH)
+    row:SetPoint("TOPLEFT", PAD, -PAD - (i-1)*rowH)
+
+    local iconF = CreateFrame("Frame", nil, row)
+    iconF:SetSize(FRAME_SIZE, FRAME_SIZE)
+    iconF:SetPoint("TOP", row, "TOP", 0, 0)
+
+    iconF.t = iconF:CreateTexture(nil, "ARTWORK")
+    iconF.t:SetAllPoints()
+    iconF.t:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
+
+    iconF.cd = CreateFrame("Cooldown", nil, iconF, "CooldownFrameTemplate")
+    iconF.cd:SetAllPoints(iconF.t)
+
+    iconF.border = iconF:CreateTexture(nil, "OVERLAY")
+    iconF.border:SetTexture("Interface\\Buttons\\UI-ActionButton-Border")
+    iconF.border:SetBlendMode("ADD")
+    iconF.border:SetPoint("CENTER", iconF, "CENTER")
+    iconF.border:SetWidth(FRAME_SIZE + BORDER_EXTRA)
+    iconF.border:SetHeight(FRAME_SIZE + BORDER_EXTRA)
+    iconF.border:Hide()
+
+    row.name = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    row.name:SetPoint("TOP", iconF, "BOTTOM", 0, -2)
+    row.name:SetText("")
+
+    row.btn = CreateFrame("Button", nil, row, "SecureActionButtonTemplate")
+    row.btn:SetAllPoints(iconF)
+    row.btn:RegisterForClicks("AnyUp")
+
+    row.icon = iconF
+    row._name, row._guid, row._cat = "", nil, nil
+    row:Hide()
+    AllRows[i] = row
+  end
+
+  AllAnchor = a
+  a:Hide() -- always hidden (UI disabled)
+  return a
+end
+
+local function RebuildAllAnchor() AllAnchor = nil end
+
+local function IncludeInAll(rec, cat, guid)
+  local kind = DRKind[guid] or "npc"
+  if not DRT_DEBUG and kind == "npc" then return false end
+  if DRT_Saved.allMode == "all" then
+    return true
+  elseif DRT_Saved.allMode == "mine" then
+    return rec.byPlayer
+  else
+    return rec.byPlayer or Interested[cat]
+  end
+end
+
+local function BuildActiveListForAll()
+  local now = GetTime()
+  local list = {}
+  for guid, cats in pairs(DRDB) do
+    for cat, rec in pairs(cats) do
+      local remain = (rec.lastStart or 0) + DR_TIME - now
+      if remain > 0 and IncludeInAll(rec, cat, guid) then
+        tinsert(list, { guid=guid, name=DRNames[guid] or "unknown", cat=cat, lastStart=rec.lastStart, remain=remain, count=rec.count or 0 })
+      end
+    end
+  end
+  tsort(list, function(a,b) return a.remain > b.remain end)
+  return list
+end
+
+function UpdateAllWindow()
+  -- UI disabled; keep list building off to save cycles
+  return
+end
+
+-- -------------------------
+-- Unlock/Lock (do NOT show ALL window)
+-- -------------------------
+local function SetUnlocked(state)
+  for _, unit in ipairs({"target","focus"}) do
+    local a = EnsureAnchor(unit)
+    if a then
+      a._unlocked = state
+      a:EnableMouse(state)
+      if a.bg    then a.bg:SetShown(state) end
+      if a.label then a.label:SetShown(state) end
+    end
+  end
+  if not state then
+    UpdateOnChange("target"); UpdateOnChange("focus")
+  end
+end
+
+-- -------------------------
+-- UNIT_AURA scanner
+-- -------------------------
+local function isMine(unitCaster)
+  return UnitIsUnit(unitCaster, "player") or UnitIsUnit(unitCaster, "pet") or UnitIsUnit(unitCaster, "vehicle")
+end
+
+local function ScanUnit(unit)
+  if not UnitExists(unit) then return end
+  local guid = UnitGUID(unit); if not guid then return end
+
+  local kind = UnitIsPlayer(unit) and "player" or (UnitPlayerControlled(unit) and "pet" or "npc")
+  if kind == "npc" then kind = classifyGUID_hex(guid) end
+
+  DRKind[guid]  = kind
+  DRNames[guid] = UnitName(unit) or DRNames[guid] or "unknown"
+
+  if not DRT_DEBUG and kind == "npc" then
+    return
+  end
+
+  local seenCat = {}
+
+  for i = 1, 40 do
+    local name, _, _, _, _, duration, expirationTime, unitCaster, _, _, spellId = UnitAura(unit, i, "HARMFUL")
+    if not name then break end
+    local cat = SpellToCat[spellId] or (name and nameDB[name]) or nil
+    if cat then
+      seenCat[cat] = true
+      DRDB[guid] = DRDB[guid] or {}
+      local rec = DRDB[guid][cat] or { lastStart=0, count=0, hadAura=false, lastExpire=0, byPlayer=false }
+      local now = GetTime()
+
+      local expire = expirationTime or 0
+      local appliedOrRefreshed = (not rec.hadAura) or (expire > (rec.lastExpire or 0) + 0.05)
+
+      if appliedOrRefreshed then
+        if now > (rec.lastStart or 0) + DR_TIME then rec.count = 0 end
+        rec.count     = min((rec.count or 0) + 1, 2)  -- 0->1->2
+        rec.lastStart = now
+        if unitCaster then rec.byPlayer = rec.byPlayer or isMine(unitCaster) end
+      else
+        if unitCaster then rec.byPlayer = rec.byPlayer or isMine(unitCaster) end
+      end
+
+      rec.hadAura    = true
+      rec.lastExpire = expire
+      DRDB[guid][cat] = rec
+    end
+  end
+
+  if DRDB[guid] then
+    local now = GetTime()
+    for cat, rec in pairs(DRDB[guid]) do
+      if rec.hadAura and not seenCat[cat] then
+        rec.hadAura    = false
+        rec.lastExpire = 0
+        rec.lastStart  = now
+      end
+      if now > (rec.lastStart or 0) + DR_TIME and not rec.hadAura then
+        DRDB[guid][cat] = nil
+      end
+    end
+    local any=false; for _ in pairs(DRDB[guid]) do any=true break end
+    if not any then DRDB[guid] = nil; DRKind[guid] = nil; DRNames[guid] = nil end
+  end
+end
+
+-- -------------------------
+-- Retarget refresh (icons always/only on DR)
+-- -------------------------
+function UpdateOnChange(unit)
+  EnsureAnchor(unit)
+
+  -- no frames built? nothing to paint
+  if not DRFrames[unit] then return end
+
+  -- hide everything if the unit doesn't exist
+  if not UnitExists(unit) then
+    for _, f in pairs(DRFrames[unit]) do f:Hide() end
+    return
+  end
+
+  local guid = UnitGUID(unit)
+  if not guid then
+    for _, f in pairs(DRFrames[unit]) do f:Hide() end
+    return
+  end
+
+  -- classify (player / pet / npc), and gate NPCs when debug is OFF
+  local kind = (UnitIsPlayer(unit) and "player") or (UnitPlayerControlled(unit) and "pet") or classifyGUID_hex(guid)
+  DRKind[guid]  = kind
+  DRNames[guid] = UnitName(unit) or DRNames[guid] or "unknown"
+  if not DRT_DEBUG and kind == "npc" then
+    for _, f in pairs(DRFrames[unit]) do f:Hide() end
+    return
+  end
+
+  local now  = GetTime()
+  local cats = DRDB[guid]
+  local always = DRT_Saved.iconsAlwaysOn
+
+  for category, frame in pairs(DRFrames[unit]) do
+    local rec    = cats and cats[category]
+    local active = rec and (now < ((rec.lastStart or 0) + DR_TIME))
+    local count  = rec and (rec.count or 0) or 0
+
+    if always then
+      -- icons are always visible; default green, bump when active
+      frame:Show()
+      if active then
+        frame.cd:SetCooldown(rec.lastStart, DR_TIME)
+        if     count >= 2 then BorderRed(frame)
+        elseif count >= 1 then BorderYellow(frame)
+        else                  BorderGreen(frame) end
+      else
+        frame.cd:Hide()
+        BorderGreen(frame)
+      end
+    else
+      -- show only while the DR window is active
+      if active then
+        frame:Show()
+        frame.cd:SetCooldown(rec.lastStart, DR_TIME)
+        if     count >= 2 then BorderRed(frame)
+        elseif count >= 1 then BorderYellow(frame)
+        else                  BorderGreen(frame) end
+      else
+        frame.cd:Hide()
+        frame:Hide()
+      end
+    end
+  end
+end
+
+-- periodic updater — re-scans target/focus and refreshes UI
+local ticker = CreateFrame("Frame")
+ticker.elapsed = 0
+ticker:SetScript("OnUpdate", function(self, e)
+  self.elapsed = self.elapsed + e
+  if self.elapsed > 0.25 then
+    self.elapsed = 0
+    ScanUnit("target")
+    ScanUnit("focus")
+    UpdateOnChange("target")
+    UpdateOnChange("focus")
+  end
+end)
+
+-- Remove NPC entries when leaving debug mode
+local function PurgeNPCsIfNeeded()
+  if DRT_DEBUG then return end
+  for guid in pairs(DRDB) do
+    local kind = DRKind[guid] or classifyGUID_hex(guid)
+    if kind ~= "player" and kind ~= "pet" then
+      DRDB[guid] = nil
+      DRNames[guid] = nil
+      DRKind[guid]  = nil
+    end
+  end
+end
+
+-- -------------------------
+-- Events
+-- -------------------------
+local EventHandler = CreateFrame("Frame")
+EventHandler:RegisterEvent("UNIT_AURA")
+EventHandler:RegisterEvent("PLAYER_TARGET_CHANGED")
+EventHandler:RegisterEvent("PLAYER_FOCUS_CHANGED")
+EventHandler:RegisterEvent("PLAYER_ENTERING_WORLD")
+EventHandler:RegisterEvent("PLAYER_LOGIN")
+
+EventHandler:SetScript("OnEvent", function(self, event, arg1)
+  if event == "UNIT_AURA" then
+    if arg1 == "target" or arg1 == "focus" then
+      ScanUnit(arg1)
+      UpdateOnChange(arg1)
+    end
+
+  elseif event == "PLAYER_TARGET_CHANGED" then
+    ScanUnit("target"); UpdateOnChange("target")
+
+  elseif event == "PLAYER_FOCUS_CHANGED" then
+    ScanUnit("focus"); UpdateOnChange("focus")
+
+  elseif event == "PLAYER_ENTERING_WORLD" then
+    wipe(DRDB); wipe(DRNames); wipe(DRKind)
+
+  elseif event == "PLAYER_LOGIN" then
+    BuildSpellLUT()
+    BuildInterested()
+    EnsureAnchor("target"); EnsureAnchor("focus")
+    -- Do NOT create AllAnchor on login (UI disabled by default)
+    SetUnlocked(false)
+    ScanUnit("target"); ScanUnit("focus")
+    UpdateOnChange("target"); UpdateOnChange("focus")
+
+    local ver = GetAddOnMetadata("DRTracker", "Version") or ""
+    local vt  = (ver ~= "" and (" v"..ver) or "")
+    DEFAULT_CHAT_FRAME:AddMessage("|cffffff00DRTracker|r"..vt.." loaded — by |cffa335eeRetroUnreal|r aka |cffa335eeBhop|r. Type |cffffff00/drt|r for commands.")
+  end
+end)
+
+-- -------------------------
+-- Slash commands
+-- -------------------------
+local function drtMsg(msg) DEFAULT_CHAT_FRAME:AddMessage("|cff33ccffDRT|r "..tostring(msg)) end
+local function listCatsForPlayer()
+  local cls = select(2, UnitClass("player"))
+  if not metaDB or not metaDB[cls] then return "?" end
+  local t = {}; for cat in pairs(metaDB[cls]) do t[#t+1] = cat end; tsort(t); return table.concat(t, ", ")
+end
+
+-- full factory reset (positions, scales; ALL UI stays disabled)
+local function FactoryReset()
+  DRT_Saved.scaleTarget = 1.0
+  DRT_Saved.scaleFocus  = 1.0
+  DRT_Saved.scaleAll    = 1.0
+  DRT_Saved.allMax      = 8
+  DRT_Saved.allMode     = "relevant"
+  DRT_Saved.allEnabled  = false
+  DRT_Saved.target, DRT_Saved.focus, DRT_Saved.allPos = nil, nil, nil
+  DRT_Saved.iconsAlwaysOn = true
+
+  wipe(DRDB); wipe(DRNames); wipe(DRKind)
+
+  for _, u in ipairs({"target","focus"}) do
+    local aF = EnsureAnchor(u); aF:ClearAllPoints()
+    local p, rel, rp, x, y = defaultPointFor(u); aF:SetPoint(p, rel, rp, x, y)
+    aF:SetScale(1.0)
+  end
+  if AllAnchor then AllAnchor:Hide() end
+
+  PurgeNPCsIfNeeded()
+  ScanUnit("target"); ScanUnit("focus")
+  UpdateOnChange("target"); UpdateOnChange("focus")
+end
+
+-- Pretty help (yellow command, white description — like FSR but yellow)
+local function DRT_Add(msg) DEFAULT_CHAT_FRAME:AddMessage(msg) end
+local function DRT_PrintHelp()
+  local C, W, R = "|cffffff00", "|cffffffff", "|r"  -- YELLOW / WHITE / RESET
+  DRT_Add(C.."DRT|r "..W.."commands:"..R)
+  DRT_Add("  "..C.."/drt unlock|r "..W.."— unlock & show preview (drag to move)"..R)
+  DRT_Add("  "..C.."/drt lock|r "..W.."— lock & hide (when idle)"..R)
+  DRT_Add("  "..C.."/drt reset|r "..W.."— factory reset (positions/scales)"..R)
+  DRT_Add("  "..C.."/drt scale target|focus <"..MIN_SCALE.."–"..MAX_SCALE..">|r "..W.."— set DR frame scale (default 1.0)"..R)
+  DRT_Add("  "..C.."/drt icons [on|off]|r "..W.."— show category icons always ("..
+          (DRT_Saved.iconsAlwaysOn and "ON" or "OFF")..")"..R)
+  DRT_Add("  "..C.."/drt debug|r "..W.."— toggle NPC tracking for testing (ON shows NPCs)"..R)
+  DRT_Add("  "..C.."       "..R)
+  DRT_Add(W.."  "..C.."Your DR categories: "..R..(listCatsForPlayer() or "?")..R)
+end
+
+
+SLASH_DRT1 = "/drt"
+SlashCmdList["DRT"] = function(raw)
+  local ok, err = pcall(function()
+    local msg = (raw or ""):match("^%s*(.-)%s*$")
+    local cmd, a, b = msg:match("^(%S*)%s*(%S*)%s*(%S*)")
+    cmd = (cmd or ""):lower()
+
+    if cmd == "" or cmd == "help" then
+      DRT_PrintHelp()
+
+    elseif cmd == "unlock" or cmd == "move" then
+      SetUnlocked(true)
+      drtMsg("Anchors UNLOCKED — drag, then /drt lock.")
+
+    elseif cmd == "lock" then
+      SetUnlocked(false)
+      drtMsg("Anchors locked.")
+
+    elseif cmd == "reset" then
+      FactoryReset()
+      drtMsg("Factory reset complete.")
+
+    elseif cmd == "scale" then
+      local which, val = (a or ""):lower(), tonumber(b)
+      if not (which=="target" or which=="focus") or not val then
+        local C, R = "|cffffff00","|r"
+        drtMsg("Usage: "..C.."/drt scale target|focus <"..MIN_SCALE.."–"..MAX_SCALE..">"..R)
+        return
+      end
+      val = clamp(val, MIN_SCALE, MAX_SCALE)
+      if which=="target" then
+        DRT_Saved.scaleTarget = val; EnsureAnchor("target"):SetScale(val)
+      else
+        DRT_Saved.scaleFocus  = val; EnsureAnchor("focus"):SetScale(val)
+      end
+      drtMsg("Scale "..which.." set to "..string.format("%.2f", val))
+
+    elseif cmd == "icons" then
+      local arg = (a or ""):lower()
+      if arg == "on" then
+        DRT_Saved.iconsAlwaysOn = true
+      elseif arg == "off" then
+        DRT_Saved.iconsAlwaysOn = false
+      else
+        DRT_Saved.iconsAlwaysOn = not DRT_Saved.iconsAlwaysOn
+      end
+      UpdateOnChange("target"); UpdateOnChange("focus")
+      drtMsg("Icons-always-on is now "..(DRT_Saved.iconsAlwaysOn and "ON" or "OFF")..".")
+
+    elseif cmd == "max" or cmd == "all" then
+      drtMsg("ALL window is disabled in this build.")
+
+    elseif cmd == "debug" then
+      DRT_DEBUG = not DRT_DEBUG
+      if not DRT_DEBUG then PurgeNPCsIfNeeded() end
+      ScanUnit("target"); ScanUnit("focus")
+      UpdateOnChange("target"); UpdateOnChange("focus")
+      drtMsg("Debug is "..(DRT_DEBUG and "ON (NPCs included)" or "OFF (players & pets only)"))
+
+    else
+      local C, R = "|cffffff00","|r"
+      drtMsg("Unknown command. Use "..C.."/drt help"..R)
+    end
+  end)
+  if not ok then
+    DEFAULT_CHAT_FRAME:AddMessage("|cffff5555DRT error:|r "..tostring(err))
+  end
+end
