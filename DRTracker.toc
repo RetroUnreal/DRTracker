@@ -1,8 +1,9 @@
 ## Interface: 30300
 ## Title: DRTracker
 ## Author: RetroUnreal / Bhop
-## Version: 1.0.0
+## Version: 2.0.0
 ## SavedVariablesPerCharacter: DRT_Saved
 
 DRData.lua
+
 DRTracker.lua
