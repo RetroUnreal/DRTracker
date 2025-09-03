@@ -4,7 +4,7 @@ Tracks Diminishing Returns on your current Target & Focus, in separate movable f
 Early version, let me know any bugs. Only tested with Mage and having one of my Rogue friends sap, which triggered my Poly DR correctly.
 
 Needs to be your current target/focus to work. Doesn't track anything else. Blame the shitty CLEU on epoch...\
-Although untargeting and retargeting a player you DR'd on should keep the DR.
+Although untargeting and retargeting a player you DR'd on keeps the DR.
 
 Works for shared DR's as well ! for example if you were a Mage and another Rogue casts Sap on your Target or Focus,\
 Your Polymorph will show DR and vice versa.
