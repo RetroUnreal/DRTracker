@@ -9,9 +9,13 @@ Although untargeting and retargeting a player you DR'd on keeps the DR.
 Works for shared DR's as well ! for example if you were a Mage and another Rogue casts Sap on your Target or Focus,\
 Your Polymorph will show DR and vice versa.
 
-With "/drt icons" turned ON (default) it will show all your classes DR Categories in the Target/Focus DR Frames with a Green border if there is no DR, a Yellow border for the first DR and a Red border for the second DR and on.
+With "/drt icons" turned ON (default) it will show all your classes DR Categories in the Target/Focus DR Frames:\
+No border = No DR\
+Green border = First DR\
+Yellow border= Second DR\
+Red border = Third DR\
 
-With  "/drt icons" turned OFF it will only start showing the DR's in Yellow as soon as they happpen.
+With  "/drt icons" turned OFF it will only start showing the DR's in the Target & Focus frames as soon as they happpen.
 
 The Yellow/Red DR will show up on CC applied & refreshed,\
 18 Second DR Window timer will only show up after the CC ends.\
