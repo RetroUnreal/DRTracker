@@ -13,7 +13,7 @@ With "/drt icons" turned ON (default) it will show all your classes DR Categorie
 No border = No DR\
 Green border = First DR\
 Yellow border= Second DR\
-Red border = Third DR\
+Red border = Third DR
 
 With  "/drt icons" turned OFF it will only start showing the DR's in the Target & Focus frames as soon as they happpen.
 
