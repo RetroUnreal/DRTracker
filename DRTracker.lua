@@ -95,24 +95,28 @@ local function classifyGUID_hex(guid)
 end
 
 -- -------------------------
--- Icon + border helpers (border sits ABOVE the cooldown sweep)
+-- Icon + border helpers (solid ring + glow, both ABOVE the cooldown)
 -- -------------------------
 local function createIcon(parent, category, icon)
   local f = CreateFrame("Frame", nil, parent)
   f:SetSize(FRAME_SIZE, FRAME_SIZE)
 
+  -- Icon
   f.t = f:CreateTexture(nil, "ARTWORK")
   f.t:SetAllPoints()
   f.t:SetTexture("Interface\\Icons\\" .. (icon or "INV_Misc_QuestionMark"))
 
+  -- Cooldown sweep (below our borders)
   f.cd = CreateFrame("Cooldown", nil, f, "CooldownFrameTemplate")
   f.cd:SetAllPoints(f.t)
   f.cd:SetFrameLevel(f:GetFrameLevel() + 1)
 
+  -- Overlay frame above the cooldown
   local overlay = CreateFrame("Frame", nil, f)
   overlay:SetAllPoints()
   overlay:SetFrameLevel(f.cd:GetFrameLevel() + 5)
 
+  -- 1) Keep the soft glow for style (ADD = pretty glow)
   f.border = overlay:CreateTexture(nil, "OVERLAY")
   f.border:SetTexture("Interface\\Buttons\\UI-ActionButton-Border")
   f.border:SetBlendMode("ADD")
@@ -121,16 +125,63 @@ local function createIcon(parent, category, icon)
   f.border:SetHeight(FRAME_SIZE + BORDER_EXTRA)
   f.border:Hide()
 
+  -- 2) Add a SOLID, opaque ring (4-piece) so bright icons can't bleed through
+  local tex = "Interface\\Buttons\\WHITE8X8" -- solid 8x8 white
+  local r = {}
+  r.top = overlay:CreateTexture(nil, "OVERLAY");    r.top:SetTexture(tex)
+  r.bot = overlay:CreateTexture(nil, "OVERLAY");    r.bot:SetTexture(tex)
+  r.lft = overlay:CreateTexture(nil, "OVERLAY");    r.lft:SetTexture(tex)
+  r.rgt = overlay:CreateTexture(nil, "OVERLAY");    r.rgt:SetTexture(tex)
+
+  -- Slightly outside the icon for a chunky look; tweak +/-1 and thickness as you like
+  local THICK = 2
+  r.top:SetPoint("TOPLEFT",     f, "TOPLEFT",    -1,  1)
+  r.top:SetPoint("TOPRIGHT",    f, "TOPRIGHT",    1,  1)
+  r.top:SetHeight(THICK)
+
+  r.bot:SetPoint("BOTTOMLEFT",  f, "BOTTOMLEFT", -1, -1)
+  r.bot:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", 1, -1)
+  r.bot:SetHeight(THICK)
+
+  r.lft:SetPoint("TOPLEFT",     f, "TOPLEFT",    -1,  1)
+  r.lft:SetPoint("BOTTOMLEFT",  f, "BOTTOMLEFT", -1, -1)
+  r.lft:SetWidth(THICK)
+
+  r.rgt:SetPoint("TOPRIGHT",    f, "TOPRIGHT",    1,  1)
+  r.rgt:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", 1, -1)
+  r.rgt:SetWidth(THICK)
+
+  -- Start hidden; color helpers will show
+  for _, edge in pairs(r) do edge:Hide() end
+  f.ring = r
+
   f:Hide()
   return f
 end
-local function BorderGreen(f)  f.border:Show(); f.border:SetVertexColor(0, 1, 0, 1) end
-local function BorderYellow(f) f.border:Show(); f.border:SetVertexColor(1, 1, 0, 1) end
-local function BorderRed(f)    f.border:Show(); f.border:SetVertexColor(1, 0, 0, 1) end
-local function BumpBorderByCount(frame, count)
-  if count >= 2 then BorderRed(frame)
-  elseif count >= 1 then BorderYellow(frame)
-  else BorderGreen(frame) end
+
+local function SetSolidRingColor(f, r, g, b, a)
+  a = a or 1
+  for _, edge in pairs(f.ring) do
+    edge:SetVertexColor(r, g, b, a)
+    edge:Show()
+  end
+end
+
+local function HideSolidRing(f)
+  for _, edge in pairs(f.ring) do edge:Hide() end
+end
+
+local function BorderGreen(f)
+  f.border:Show(); f.border:SetVertexColor(0, 1, 0, 1)
+  SetSolidRingColor(f, 0, 1, 0, 1)
+end
+local function BorderYellow(f)
+  f.border:Show(); f.border:SetVertexColor(1, 1, 0, 1)
+  SetSolidRingColor(f, 1, 1, 0, 1)
+end
+local function BorderRed(f)
+  f.border:Show(); f.border:SetVertexColor(1, 0, 0, 1)
+  SetSolidRingColor(f, 1, 0, 0, 1)
 end
 
 -- -------------------------
@@ -316,7 +367,7 @@ local function SetUnlocked(state)
 end
 
 -- -------------------------
--- UNIT_AURA scanner
+-- UNIT_AURA scanner (apply/refresh bump; timer starts on falloff)
 -- -------------------------
 local function isMine(unitCaster)
   return UnitIsUnit(unitCaster, "player") or UnitIsUnit(unitCaster, "pet") or UnitIsUnit(unitCaster, "vehicle")
@@ -326,15 +377,14 @@ local function ScanUnit(unit)
   if not UnitExists(unit) then return end
   local guid = UnitGUID(unit); if not guid then return end
 
+  -- classify (Wrath-safe)
   local kind = UnitIsPlayer(unit) and "player" or (UnitPlayerControlled(unit) and "pet" or "npc")
   if kind == "npc" then kind = classifyGUID_hex(guid) end
-
   DRKind[guid]  = kind
   DRNames[guid] = UnitName(unit) or DRNames[guid] or "unknown"
 
-  if not DRT_DEBUG and kind == "npc" then
-    return
-  end
+  -- gate NPCs when debug is OFF
+  if not DRT_DEBUG and kind == "npc" then return end
 
   local seenCat = {}
 
@@ -345,36 +395,52 @@ local function ScanUnit(unit)
     if cat then
       seenCat[cat] = true
       DRDB[guid] = DRDB[guid] or {}
-      local rec = DRDB[guid][cat] or { lastStart=0, count=0, hadAura=false, lastExpire=0, byPlayer=false }
+      -- Fields:
+      --   hadAura    : bool — aura currently seen on unit
+      --   lastExpire : number — last seen expiration timestamp for refresh detection
+      --   count      : 0,1,2  — DR stage (yellow=1, red=2)
+      --   lastStart  : number — when the POST-FALLOFF 18s DR timer started
+      --   byPlayer   : bool   — whether we (player/pet/vehicle) ever applied it
+      local rec = DRDB[guid][cat] or { hadAura=false, lastExpire=0, count=0, lastStart=0, byPlayer=false }
       local now = GetTime()
 
       local expire = expirationTime or 0
-      local appliedOrRefreshed = (not rec.hadAura) or (expire > (rec.lastExpire or 0) + 0.05)
+      local appliedOrRefreshed =
+        (not rec.hadAura) or (expire > (rec.lastExpire or 0) + 0.05)
 
       if appliedOrRefreshed then
-        if now > (rec.lastStart or 0) + DR_TIME then rec.count = 0 end
-        rec.count     = min((rec.count or 0) + 1, 2)  -- 0->1->2
-        rec.lastStart = now
+        -- If the DR window fully elapsed before this new application, reset the stage.
+        if (rec.lastStart or 0) > 0 and (now > (rec.lastStart + DR_TIME)) and not rec.hadAura then
+          rec.count = 0
+        end
+        -- Bump the stage on each apply/refresh while the aura is ON.
+        rec.count     = min((rec.count or 0) + 1, 2)  -- 0->1(yellow), 1->2(red)
+        rec.hadAura   = true
+        rec.lastExpire = expire
         if unitCaster then rec.byPlayer = rec.byPlayer or isMine(unitCaster) end
+        -- NOTE: we do NOT touch rec.lastStart here — timer begins on falloff.
       else
+        -- Aura still up, expiration unchanged — just record caster ownership if it's us.
         if unitCaster then rec.byPlayer = rec.byPlayer or isMine(unitCaster) end
+        rec.hadAura = true
       end
 
-      rec.hadAura    = true
-      rec.lastExpire = expire
       DRDB[guid][cat] = rec
     end
   end
 
+  -- Handle falloffs + cleanup
   if DRDB[guid] then
     local now = GetTime()
     for cat, rec in pairs(DRDB[guid]) do
       if rec.hadAura and not seenCat[cat] then
-        rec.hadAura    = false
+        -- Aura fell off -> start the 18s DR timer NOW
+        rec.hadAura   = false
         rec.lastExpire = 0
-        rec.lastStart  = now
+        rec.lastStart = now
       end
-      if now > (rec.lastStart or 0) + DR_TIME and not rec.hadAura then
+      -- If the 18s window elapsed and aura is not up anymore, purge this record.
+      if (not rec.hadAura) and (rec.lastStart or 0) > 0 and now > (rec.lastStart + DR_TIME) then
         DRDB[guid][cat] = nil
       end
     end
@@ -384,15 +450,13 @@ local function ScanUnit(unit)
 end
 
 -- -------------------------
--- Retarget refresh (icons always/only on DR)
+-- Retarget refresh (borders during aura; cooldown only after falloff)
 -- -------------------------
 function UpdateOnChange(unit)
   EnsureAnchor(unit)
 
-  -- no frames built? nothing to paint
   if not DRFrames[unit] then return end
 
-  -- hide everything if the unit doesn't exist
   if not UnitExists(unit) then
     for _, f in pairs(DRFrames[unit]) do f:Hide() end
     return
@@ -404,7 +468,7 @@ function UpdateOnChange(unit)
     return
   end
 
-  -- classify (player / pet / npc), and gate NPCs when debug is OFF
+  -- classify + NPC gate (when debug off)
   local kind = (UnitIsPlayer(unit) and "player") or (UnitPlayerControlled(unit) and "pet") or classifyGUID_hex(guid)
   DRKind[guid]  = kind
   DRNames[guid] = UnitName(unit) or DRNames[guid] or "unknown"
@@ -413,20 +477,29 @@ function UpdateOnChange(unit)
     return
   end
 
-  local now  = GetTime()
-  local cats = DRDB[guid]
-  local always = DRT_Saved.iconsAlwaysOn
+  local now     = GetTime()
+  local cats    = DRDB[guid]
+  local always  = DRT_Saved.iconsAlwaysOn
 
   for category, frame in pairs(DRFrames[unit]) do
-    local rec    = cats and cats[category]
-    local active = rec and (now < ((rec.lastStart or 0) + DR_TIME))
-    local count  = rec and (rec.count or 0) or 0
+    local rec = cats and cats[category]
+    local hasAura      = rec and rec.hadAura
+    local timerActive  = rec and (not rec.hadAura) and (rec.lastStart or 0) > 0 and (now < (rec.lastStart + DR_TIME))
+    local count        = rec and (rec.count or 0) or 0
 
     if always then
-      -- icons are always visible; default green, bump when active
+      -- Icons always visible
       frame:Show()
-      if active then
+      if hasAura then
+        -- Aura is up: border shows DR stage; no cooldown sweep yet.
+        frame.cd:Hide()
+        if     count >= 2 then BorderRed(frame)
+        elseif count >= 1 then BorderYellow(frame)
+        else                  BorderGreen(frame) end
+      elseif timerActive then
+        -- Aura fell off: run the 18s sweep and keep stage color.
         frame.cd:SetCooldown(rec.lastStart, DR_TIME)
+        frame.cd:Show()
         if     count >= 2 then BorderRed(frame)
         elseif count >= 1 then BorderYellow(frame)
         else                  BorderGreen(frame) end
@@ -435,10 +508,15 @@ function UpdateOnChange(unit)
         BorderGreen(frame)
       end
     else
-      -- show only while the DR window is active
-      if active then
+      -- Only show when something is happening (aura up OR timer active)
+      if hasAura or timerActive then
         frame:Show()
-        frame.cd:SetCooldown(rec.lastStart, DR_TIME)
+        if hasAura then
+          frame.cd:Hide()
+        else
+          frame.cd:SetCooldown(rec.lastStart, DR_TIME)
+          frame.cd:Show()
+        end
         if     count >= 2 then BorderRed(frame)
         elseif count >= 1 then BorderYellow(frame)
         else                  BorderGreen(frame) end
