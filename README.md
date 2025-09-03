@@ -6,7 +6,8 @@ Early version, let me know any bugs. Only tested with Mage and having one of my 
 Needs to be your current target/focus to work. Doesn't track anything else. Blame the shitty CLEU on epoch...\
 Although untargeting and retargeting a player you DR'd on should keep the DR.
 
-Works for shared DR's as well ! for example if you were a Mage and another Rogue casts Sap on your target, Your Polymorph will show DR and vice versa.
+Works for shared DR's as well ! for example if you were a Mage and another Rogue casts Sap on your Target or Focus,\
+Your Polymorph will show DR and vice versa.
 
 With "/drt icons" turned ON (default) it will show all your classes DR Categories in the Target/Focus DR Frames with a green border if there is no DR, a yellow border for the first DR and a red border for the third DR and on
 
