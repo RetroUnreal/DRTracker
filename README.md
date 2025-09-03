@@ -13,7 +13,8 @@ With "/drt icons" turned ON (default) it will show all your classes DR Categorie
 
 With  "/drt icons" turned OFF it will only start showing the DR's in Yellow as soon as they happpen.
 
-The Yellow/Red DR will show up on CC applied & refreshed, 18 Second DR Window timer will only show up after the CC ends.\
+The Yellow/Red DR will show up on CC applied & refreshed,\
+18 Second DR Window timer will only show up after the CC ends.\
 (Like Diminishing Returns work in TBC, this should be correct but I only tested the DR Window once and 18 seconds wait was enough for a full Polymorph)
 
 # Commands:
