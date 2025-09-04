@@ -17,6 +17,7 @@ local GetTime, UnitGUID, UnitName = GetTime, UnitGUID, UnitName
 local UnitPlayerControlled, UnitIsUnit, UnitExists = UnitPlayerControlled, UnitIsUnit, UnitExists
 local UnitIsPlayer, UnitAura, GetSpellInfo = UnitIsPlayer, UnitAura, GetSpellInfo
 local InCombatLockdown = InCombatLockdown
+local UnitCanAttack = UnitCanAttack
 
 -- -------------------------
 -- Config & SavedVariables
@@ -92,6 +93,22 @@ local function classifyGUID_hex(guid)
     return "npc"
   end
   return "npc"
+end
+
+-- Track only hostile players & player-controlled pets. NPCs only in debug.
+local function ShouldTrackUnit(unit, kind)
+  if not UnitExists(unit) then return false end
+  -- kind may be precomputed by caller; if not, classify here
+  kind = kind or (UnitIsPlayer(unit) and "player")
+              or (UnitPlayerControlled(unit) and "pet")
+              or "npc"
+
+  if kind == "npc" then
+    return DRT_DEBUG  -- NPCs visible only while debug is ON
+  end
+
+  -- players & pets: only when we can attack them (covers duels)
+  return UnitCanAttack("player", unit) and true or false
 end
 
 -- -------------------------
@@ -393,7 +410,7 @@ local function ScanUnit(unit)
   DRNames[guid] = UnitName(unit) or DRNames[guid] or "unknown"
 
   -- gate NPCs when debug is OFF
-  if not DRT_DEBUG and kind == "npc" then return end
+  if not ShouldTrackUnit(unit, kind) then return end
 
   local seenCat = {}
 
@@ -469,14 +486,15 @@ function UpdateOnChange(unit)
     return
   end
 
-  -- classify + NPC gate (when debug off)
+  -- classify + hostility gate (duel-safe)
   local kind = (UnitIsPlayer(unit) and "player") or (UnitPlayerControlled(unit) and "pet") or classifyGUID_hex(guid)
   DRKind[guid]  = kind
   DRNames[guid] = UnitName(unit) or DRNames[guid] or "unknown"
-  if not DRT_DEBUG and kind == "npc" then
+  if not ShouldTrackUnit(unit, kind) then
     for _, f in pairs(DRFrames[unit]) do f:Hide() end
     return
   end
+
 
   local now    = GetTime()
   local cats   = DRDB[guid]
