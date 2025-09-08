@@ -1,7 +1,6 @@
 # DRTracker - Diminishing Returns Tracker for Project-Epoch (3.3.5a)
 
-Tracks Diminishing Returns on your current Target & Focus, in separate movable frames.\
-Early version, let me know any bugs. Only tested with Mage and having one of my Rogue friends sap, which triggered my Poly DR correctly.
+Tracks Diminishing Returns on your current Target & Focus, in separate movable frames.
 
 Needs to be your current target/focus to work, DR's should also show up on mouseover targets.\
 Doesn't track anything else. Blame the shitty CLEU on epoch...\
