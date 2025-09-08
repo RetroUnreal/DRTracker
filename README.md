@@ -2,8 +2,7 @@
 
 Tracks Diminishing Returns on your current Target & Focus, in separate movable frames.
 
-Needs to be your current target/focus to work, DR's should also show up on mouseover targets.\
-Doesn't track anything else. Blame the shitty CLEU on epoch...\
+Needs to be your current target/focus to work, Doesn't track anything else. Blame the shitty CLEU on epoch...\
 Although retargeting a player you DR'd on remembers the DR's you had on them.
 
 Works for shared DR's as well ! for example if you were a Mage and another Rogue casts Sap on your Target or Focus,\
